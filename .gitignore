@@ -1,0 +1,27 @@
+# 下载的轨迹与缓存，保留协作者可用的数据获取说明
+/datasets/*
+!/datasets/README.md
+
+# 仅收录选定的参考源码子模块
+/reference/source/*/
+!/reference/source/agentic-harness-engineering/
+!/reference/source/rrsi/
+/reference/paper/*.pdf
+
+# 本地验证用的测试与对照脚本
+/tests/
+
+# 实验输出、运行日志和检查点
+/runs/
+
+# Python 缓存与本地环境
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+
+# 个人配置与凭据
+.DS_Store
+.env
+.env.*
+!.env.example

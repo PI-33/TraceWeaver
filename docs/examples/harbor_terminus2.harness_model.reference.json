@@ -1,0 +1,293 @@
+{
+  "schema_version": "0.1",
+  "harness": "这是 Terminus-2 的 Stage 1 参考模型，源码根目录为 harness/harbor_terminus2/。入口 AgentHarness 继承 Terminus2。任务与回合控制先建立持久终端，将任务说明、可用服务与技能、初始屏幕填入首轮提示。每轮先检查会话，再把当前提示交给主 Chat 请求模型。主动摘要成功时，模型请求与上下文交接组件先换用交接提示。提示与回复协议组件将模型回复解析为命令、完成标志和格式反馈。解析错误时主循环请求纠正，有效命令则由终端执行与观测组件依次发送到同一窗格，整批共享一次反馈。普通未完成回合据此继续，首次完成声明要求确认，待确认期间再次有效声明完成才结束。会话消失或轮次耗尽也会结束交互。轨迹与录制组件保存步骤、观察及交接记录，任务得分由包外 verifier 给出。mechanisms.py 另有记忆、工具注册、子调用和技能上传原语，本包入口和主循环未见对这些原语的静态调用。",
+  "nodes": {
+    "Component": {
+      "任务与回合控制": {
+        "Description": "接收任务与运行配置，建立会话并决定每一轮是请求模型、派发动作、要求确认还是结束交互。",
+        "Method": {
+          "AgentHarness.name": {
+            "Description": "入口类 AgentHarness 继承 Terminus2，覆写的 name() 返回 rrsi-terminus2。setup 用这个名称创建终端会话，写主轨迹时也用它标识 Agent。",
+            "file_path": "__init__.py"
+          },
+          "Terminus2.__init__": {
+            "Description": "接收模型、协议、轮次、摘要和轨迹配置，建立模型后端，按 parser_name（默认 json）选定解析器并读取首轮模板和 templates/timeout.txt。max_turns 优先于旧轮次参数，均未指定时上限为 1000000 轮。所得配置和模板存放在实例上，供 setup 和 run 使用。",
+            "file_path": "terminus_2.py"
+          },
+          "Terminus2.setup": {
+            "Description": "接收 Harbor 环境，使用其默认用户、配置的窗格尺寸和额外环境变量创建 TmuxSession，保存到 self._session 并启动。开启录制时同时传入本地与远端 recording.cast 路径。会话启动失败会向调用方抛错。",
+            "file_path": "terminus_2.py"
+          },
+          "Terminus2.run": {
+            "Description": "接收任务说明、环境和 AgentContext，重置本次运行的步骤、用量与待确认状态，创建 Chat。读取并裁剪初始屏幕，将任务、已配置的 MCP 服务说明和发现的技能填入所选模板。首条轨迹是这份提示的 user step。进入主循环后，finally 汇总主调用与摘要调用的用量并尝试保存轨迹。",
+            "file_path": "terminus_2.py"
+          },
+          "Terminus2._run_agent_loop": {
+            "Description": "接收首轮提示、Chat 和原始任务。每轮检查会话是否存活，必要时用摘要交接提示替换本轮输入。解析反馈含 ERROR: 时记录纠错提示，跳过本轮执行并保留待确认状态。有效回复先执行该批命令，再根据完成标志更新待确认状态、构造 observation 并记录该轮。首次完成请求确认，待确认期间再次有效声明完成时返回，有效的未完成回复清除待确认状态。会话消失或轮次用尽也会结束循环。",
+            "file_path": "terminus_2.py"
+          },
+          "Terminus2._get_completion_confirmation_message": {
+            "Description": "接收当前批次的终端文本，按 JSON 或 XML 协议返回含 Are you sure you want to mark the task as complete? 的确认提示，并要求模型再次给出完成标志。方法返回提示文本，任务判分由包外 verifier 执行。",
+            "file_path": "terminus_2.py"
+          }
+        }
+      },
+      "提示与回复协议": {
+        "Description": "约定模型该如何描述动作，将回复文本解释为命令列表、完成标志和格式反馈，交给主循环使用。",
+        "Method": {
+          "Terminus2._get_parser": {
+            "Description": "读取 parser_name。json 返回 TerminusJSONPlainParser，xml 返回 TerminusXMLPlainParser，其他值抛出 ValueError。初始化保存所选实例，后续回合都用它解释回复。",
+            "file_path": "terminus_2.py"
+          },
+          "Terminus2._get_prompt_template_path": {
+            "Description": "按 parser_name 返回相对于当前 Python 文件的模板路径。json 选择 templates/terminus-json-plain.txt，xml 选择 templates/terminus-xml-plain.txt。初始化读取模板内容，run 填入 instruction 与 terminal_state。",
+            "file_path": "terminus_2.py"
+          },
+          "Terminus2._build_skills_section": {
+            "Description": "接收远端环境，扫描已配置 skills_dir 下一层技能目录的 SKILL.md，提取有效 frontmatter 中的名称与描述，连同远端路径组成 available_skills XML。目录未配置或不存在、find 返回非零或没有有效条目时返回 None，run 只将实际发现的技能追加到任务说明。",
+            "file_path": "terminus_2.py"
+          },
+          "Terminus2._handle_llm_interaction": {
+            "Description": "将当前 prompt、Chat、原始任务和会话交给 _query_llm，读取回复的 .content 并调用所选解析器。按错误和警告组装 ERROR:、WARNINGS: 反馈，把每条解析命令转换为 Command，其中 duration_sec 取解析时长与 60 的较小值。返回命令、完成标志、反馈、analysis、plan 和原始模型回复。",
+            "file_path": "terminus_2.py"
+          },
+          "TerminusJSONPlainParser.parse_response": {
+            "Description": "接收完整回复文本，提取 JSON，检查 analysis、plan、commands 和各命令的 keystrokes。缺省或类型无效的 duration 使用 1.0 并给出警告。初次失败时尝试有限格式修复。返回包含命令、完成标志、错误、警告和分析计划的 ParseResult。结构已通过且完成标志为真时，命令条目解析错误可降为警告并返回空命令。",
+            "file_path": "terminus_json_plain_parser.py"
+          },
+          "TerminusXMLPlainParser.parse_response": {
+            "Description": "接收 XML 风格的回复文本，提取 response 区块、分析、计划、keystrokes 和完成标志，必要时尝试补齐 response 标签。按键内容按原文传递，XML 实体保留原字符序列。返回 ParseResult。完成声明允许空命令，部分命令解析错误在已声明完成时成为警告。",
+            "file_path": "terminus_xml_plain_parser.py"
+          },
+          "TerminusXMLPlainParser.salvage_truncated_response": {
+            "Description": "接收因输出超限而截断的文本。找到 </commands> 及其后的 </response> 时截到该结束标签并重新解析。通过检查才返回截取的字符串，否则返回 None，同时给出是否检测到多块警告的标志。",
+            "file_path": "terminus_xml_plain_parser.py"
+          }
+        }
+      },
+      "终端执行与观测": {
+        "Description": "把解析好的命令批次送入同一个 tmux 窗格，决定什么时候取屏、取哪段文本以及保留多少内容，再将批次反馈交回主循环。",
+        "Method": {
+          "TmuxSession.start": {
+            "Description": "使用保存的环境、用户、会话名称和窗格尺寸准备 tmux，创建会话并尝试提高历史缓冲上限。会话启动命令返回非零时抛出 RuntimeError。配置远端录像路径时在窗格启动 asciinema、清屏，并上传 get-asciinema-timestamp.sh。后续按键和取屏使用这个会话。",
+            "file_path": "tmux_session.py"
+          },
+          "TmuxSession.is_session_alive": {
+            "Description": "以会话用户运行 tmux has-session，返回命令退出码是否为零。主循环每轮请求模型之前读取这个布尔值，失去会话时直接返回。",
+            "file_path": "tmux_session.py"
+          },
+          "Terminus2._execute_commands": {
+            "Description": "接收 Command 列表和 TmuxSession，依次调用 send_keys，设 block=False，按命令的 duration_sec 等待。正常发完整批后读取增量输出并限制长度，返回 (False, 终端文本)，空命令列表也会取屏。某次发送抛出 TimeoutError 时在该处结束批次，用超时模板、命令、时长和当时的终端状态返回 (True, 反馈文本)。",
+            "file_path": "terminus_2.py"
+          },
+          "TmuxSession.send_keys": {
+            "Description": "接收按键字符串或列表及等待参数，准备按键后分派发送。主任务以非阻塞模式发送，同一窗格里的长字面文本可以经 tmux paste-buffer 送达。若调用方要求阻塞且末项构成可执行命令，则添加完成信号，等待 tmux wait done，等待失败可抛 TimeoutError。",
+            "file_path": "tmux_session.py"
+          },
+          "TmuxSession._send_non_blocking_keys": {
+            "Description": "接收按键序列与 min_timeout_sec，先按顺序发送，再按发送已耗用的时间补足最短等待。返回时按键已送出，窗格中的进程仍可能运行。",
+            "file_path": "tmux_session.py"
+          },
+          "TmuxSession.capture_pane": {
+            "Description": "通过环境执行 tmux capture-pane，返回 stdout 或空串。capture_entire=True 时连同历史缓冲一起读取，False 时读取当前可见窗格。增量比较和摘要提问使用不同的取屏范围。",
+            "file_path": "tmux_session.py"
+          },
+          "TmuxSession._find_new_content": {
+            "Description": "接收本次完整缓冲，将上一次缓冲去除首尾空白后作为子串查找。匹配时返回当前缓冲的一个后缀，多行旧缓冲使用其最后一个换行的索引作为切片起点。匹配失败返回 None。这个候选文本可能包含上次已见的内容。",
+            "file_path": "tmux_session.py"
+          },
+          "TmuxSession.get_incremental_output": {
+            "Description": "捕获完整缓冲并与 self._previous_buffer 比较，随后保存本次缓冲供下次使用。首次读取、旧缓冲无法匹配或提取结果只有空白时，重新取可见窗格，返回以 Current Terminal Screen: 开头的文本。候选增量非空时，返回以 New Terminal Output: 开头的文本。",
+            "file_path": "tmux_session.py"
+          },
+          "Terminus2._limit_output_length": {
+            "Description": "接收终端文本和字节预算，默认 10000。UTF-8 字节数在预算内时原样返回，超出时各取一半预算的首尾字节，忽略边界处被切断的字符，并在中间插入含 output limited to 和 interior bytes omitted 的标记。标记另占长度。",
+            "file_path": "terminus_2.py"
+          }
+        }
+      },
+      "模型请求与上下文交接": {
+        "Description": "使用当前提示与 Chat 历史请求模型。上下文不足或回复过长时，这组实现决定下一次请求保留哪些信息、使用哪份提示以及怎样接回主循环。",
+        "Method": {
+          "Terminus2._query_llm": {
+            "Description": "接收 Chat、当前提示、原任务和终端会话，普通路径调用 chat.chat 并返回 LLMResponse。上下文超限时，摘要关闭则上抛，开启时先腾出历史空间，再尝试完整交接、短摘要，最后可用原任务加可见屏幕尾部请求 Chat。用恢复提示再次请求 Chat 仍失败时，返回正文为「Technical difficulties. Please continue with the task.」的 LLMResponse。输出超限时尝试解析器提供的片段恢复，成功分支直接返回字符串，否则把截断回复加入历史并递归请求缩短重发。对向外抛出的普通 Exception，重试装饰器最多尝试三次，ContextLengthExceededError 除外。",
+            "file_path": "terminus_2.py"
+          },
+          "Terminus2._check_proactive_summarization": {
+            "Description": "接收主 Chat、原任务和终端会话，用模型上下文上限减去当前消息的 token 数。当剩余空间严格低于配置阈值（默认 8000）时尝试完整摘要并返回交接提示和子轨迹引用。空间充足或摘要抛出异常时返回 None，主循环沿用原提示。",
+            "file_path": "terminus_2.py"
+          },
+          "Terminus2._unwind_messages_to_free_tokens": {
+            "Description": "接收 Chat 与目标空余 token 数，上下文超限恢复路径传入 4000。在消息数大于一且空间仍不足时，从历史末尾一次删除两条消息，随后重置响应链。调用方继续使用这份已改变的 Chat 历史。",
+            "file_path": "terminus_2.py"
+          },
+          "Terminus2._summarize": {
+            "Description": "接收主 Chat、原任务和会话。历史为空时返回原任务与空引用。有历史时用三次辅助请求交接任务。第一次根据现存历史写总结，第二次以空历史读取任务、总结和可见屏幕并提问，第三次带着现存历史、总结请求和总结回复，回答这些问题。成功后主历史改为原首消息、提问提示与问题，重置响应链。方法返回含回答的 handoff_prompt 和三份子轨迹引用，继续使用同一终端。",
+            "file_path": "terminus_2.py"
+          },
+          "Terminus2._run_subagent": {
+            "Description": "接收本次辅助请求的 prompt、指定消息历史、已有轨迹步骤和会话标识，用当前 LLM 的 call 接口取得回复。它记录耗时和用量、追加步骤并保存子轨迹，向摘要流程返回模型回复和 SubagentTrajectoryRef。",
+            "file_path": "terminus_2.py"
+          }
+        }
+      },
+      "轨迹与录制": {
+        "Description": "将主循环实际构造的步骤、观察与摘要交接保存为可追查的运行记录，按录制配置处理终端录像。主轨迹、摘要子轨迹和录像分别描述不同层面的运行信息。",
+        "Method": {
+          "_terminal_observation_source_call_id": {
+            "Description": "接收本轮已解析的命令列表和回合序号。恰有一条命令时返回 call_{episode}_1，其他数量返回 None。主循环在写结构化工具调用时使用该值，让单命令关联本批观察，多命令保留共享观察。",
+            "file_path": "terminus_2.py"
+          },
+          "Terminus2._dump_trajectory": {
+            "Description": "使用实例累积的轨迹步骤和当前摘要次数，委托 _dump_trajectory_with_continuation_index 写主轨迹。正常处理完执行批次会调用这里，run 进入主循环后的 finally 也会调用，以保存当时已记录的步骤。",
+            "file_path": "terminus_2.py"
+          },
+          "Terminus2._dump_trajectory_with_continuation_index": {
+            "Description": "接收续接序号，组合当前步骤、会话 ID、模型和解析器信息及 AgentContext 中的用量，写出 trajectory.json。在 linear_history 开启且序号大于零时写 trajectory.cont-N.json，保存有后续段的旧段时写入 continued_trajectory_ref。缺少 context 时直接返回，文件写入异常记入日志。",
+            "file_path": "terminus_2.py"
+          },
+          "Terminus2._split_trajectory_on_summarization": {
+            "Description": "主循环在启用 linear_history 且有待记录的交接提示时调用。它先按前一序号保存旧段，更新会话 ID，再用当前 Chat 的 messages[:-1] 重建新段起始步骤，标为 is_copied_context。起始步骤取自 Chat 消息，传入的 handoff_prompt 参数没有被单独写成一步。",
+            "file_path": "terminus_2.py"
+          },
+          "Terminus2._save_subagent_trajectory": {
+            "Description": "接收辅助调用的会话 ID、步骤、用量及 summary、questions 或 answers 后缀，尝试写入 trajectory.summarization-N-后缀.json，并返回带文件名的子轨迹引用。文件写入异常会记录到日志，调用方仍会收到该引用。",
+            "file_path": "terminus_2.py"
+          },
+          "TmuxSession.stop": {
+            "Description": "被调用且已配置录制时，发送 C-d 并稍候，再按本地路径下载 recording.cast。若有时间标记和本地路径，则调用 AsciinemaHandler 合并标记。本包的主回合退出分支没有直接调用 stop。",
+            "file_path": "tmux_session.py"
+          },
+          "AsciinemaHandler.merge_markers": {
+            "Description": "使用构造时传入的录像路径和已排序的时间标记。录像存在且有标记时，保留文件头和原事件，按时间插入 m 事件，写入临时文件后替换原录像。没有标记或录像文件不存在时直接返回。",
+            "file_path": "asciinema_handler.py"
+          }
+        }
+      }
+    }
+  },
+  "edges": {
+    "contains": {
+      "Terminus-2 → 任务与回合控制": "控制一次任务从启动到退出。",
+      "任务与回合控制 → AgentHarness.name": "给入口实例和运行记录提供名称。",
+      "任务与回合控制 → Terminus2.__init__": "准备本次 Harness 使用的协议、模板和执行配置。",
+      "任务与回合控制 → Terminus2.setup": "为后续动作建立同一个终端会话。",
+      "任务与回合控制 → Terminus2.run": "构造首轮输入，进入循环并收集本次运行结果。",
+      "任务与回合控制 → Terminus2._run_agent_loop": "控制执行、纠错、待确认状态和回合退出。",
+      "任务与回合控制 → Terminus2._get_completion_confirmation_message": "生成首次完成声明后的确认提示。",
+      "Terminus-2 → 提示与回复协议": "将任务表述为文本协议，再把回复解释为动作。",
+      "提示与回复协议 → Terminus2._get_parser": "选定回复文本的解析器。",
+      "提示与回复协议 → Terminus2._get_prompt_template_path": "选择与解析器配套的首轮任务模板。",
+      "提示与回复协议 → Terminus2._build_skills_section": "将可发现的技能及路径写入首轮提示。",
+      "提示与回复协议 → Terminus2._handle_llm_interaction": "把解析结果转换成主循环可使用的动作和反馈。",
+      "提示与回复协议 → TerminusJSONPlainParser.parse_response": "解释 JSON 回复、纠正有限格式问题并给出诊断。",
+      "提示与回复协议 → TerminusXMLPlainParser.parse_response": "解释 XML 风格回复并保留按键原文。",
+      "提示与回复协议 → TerminusXMLPlainParser.salvage_truncated_response": "检查截断文本中是否保留了可解析的完整响应。",
+      "Terminus-2 → 终端执行与观测": "执行按键批次并决定模型能看到哪段终端文本。",
+      "终端执行与观测 → TmuxSession.start": "创建持久窗格并按配置启动录制。",
+      "终端执行与观测 → TmuxSession.is_session_alive": "检查本轮是否还有可操作的终端。",
+      "终端执行与观测 → Terminus2._execute_commands": "调度整批按键并生成正常或超时反馈。",
+      "终端执行与观测 → TmuxSession.send_keys": "根据发送模式选择按键与等待行为。",
+      "终端执行与观测 → TmuxSession._send_non_blocking_keys": "决定非阻塞发送后何时可以继续本批操作。",
+      "终端执行与观测 → TmuxSession.capture_pane": "提供完整缓冲或可见屏幕。",
+      "终端执行与观测 → TmuxSession._find_new_content": "根据两次缓冲的文本匹配选出候选增量。",
+      "终端执行与观测 → TmuxSession.get_incremental_output": "决定这次反馈使用候选增量还是当前屏幕。",
+      "终端执行与观测 → Terminus2._limit_output_length": "决定长输出的哪些字节进入反馈。",
+      "Terminus-2 → 模型请求与上下文交接": "控制模型请求、超限恢复以及上下文交接。",
+      "模型请求与上下文交接 → Terminus2._query_llm": "请求模型并决定上下文或输出超限时的下一份输入。",
+      "模型请求与上下文交接 → Terminus2._check_proactive_summarization": "判断新回合开始前是否需要主动交接。",
+      "模型请求与上下文交接 → Terminus2._unwind_messages_to_free_tokens": "在超限恢复前释放近期消息占用的空间。",
+      "模型请求与上下文交接 → Terminus2._summarize": "重组模型可见历史并生成下一次交互的交接提示。",
+      "模型请求与上下文交接 → Terminus2._run_subagent": "执行交接中的一次辅助模型调用。",
+      "Terminus-2 → 轨迹与录制": "保存主轨迹、交接轨迹和可选终端录像。",
+      "轨迹与录制 → _terminal_observation_source_call_id": "决定批次观察能否关联到一条具体命令。",
+      "轨迹与录制 → Terminus2._dump_trajectory": "发起当前主轨迹的保存。",
+      "轨迹与录制 → Terminus2._dump_trajectory_with_continuation_index": "确定主轨迹的内容、文件名和续接引用。",
+      "轨迹与录制 → Terminus2._split_trajectory_on_summarization": "在交接处将主轨迹切成可续接的两段。",
+      "轨迹与录制 → Terminus2._save_subagent_trajectory": "保存一次摘要子调用的记录并提供父轨迹引用。",
+      "轨迹与录制 → TmuxSession.stop": "处理已启动录像的收尾、下载和可选标记。",
+      "轨迹与录制 → AsciinemaHandler.merge_markers": "将时间标签写入本地终端录像。"
+    },
+    "depends_on": {
+      "Terminus2.__init__ → Terminus2._get_parser": "初始化时取得后续解释回复所用的解析器实例。",
+      "Terminus2.__init__ → Terminus2._get_prompt_template_path": "根据返回的本地路径读取 JSON 或 XML 提示模板。",
+      "Terminus2.setup → AgentHarness.name": "当入口是 AgentHarness 时，setup 调用 self.name()，将返回的名称传给 TmuxSession。",
+      "Terminus2.setup → TmuxSession.start": "实例化会话后等待 start 完成，再将该会话用于任务执行。",
+      "Terminus2.run → Terminus2._build_skills_section": "在格式化首轮提示前取得当前环境中可发现的技能说明。",
+      "Terminus2.run → TmuxSession.get_incremental_output": "首次提示中的终端状态来自已建立会话的取屏方法。",
+      "Terminus2.run → Terminus2._limit_output_length": "在填充 terminal_state 前限制首轮终端文本长度。",
+      "Terminus2.run → Terminus2._run_agent_loop": "将 initial_prompt、主 Chat 与原任务说明交给回合循环。",
+      "Terminus2.run → Terminus2._dump_trajectory": "进入主循环后的 finally 更新上下文指标，再请求保存主轨迹。",
+      "Terminus2._run_agent_loop → TmuxSession.is_session_alive": "每轮先检查会话，返回假时直接退出。",
+      "Terminus2._run_agent_loop → Terminus2._check_proactive_summarization": "有原任务且启用摘要时，在本轮模型请求前检查是否交接。",
+      "Terminus2._run_agent_loop → Terminus2._handle_llm_interaction": "取得本轮命令、完成标志、解析反馈和模型回复。",
+      "Terminus2._run_agent_loop → Terminus2._execute_commands": "解析通过后执行本轮命令列表并取得批次反馈。",
+      "Terminus2._run_agent_loop → Terminus2._limit_output_length": "构造普通未完成回合的 observation 时再次处理终端文本。",
+      "Terminus2._run_agent_loop → Terminus2._get_completion_confirmation_message": "首次有效声明完成时取得协议对应的确认提示。",
+      "Terminus2._run_agent_loop → _terminal_observation_source_call_id": "为有命令的结构化轨迹选择共享观察的 source_call_id。",
+      "Terminus2._run_agent_loop → Terminus2._split_trajectory_on_summarization": "有待记录的交接提示且启用 linear_history 时切分轨迹。",
+      "Terminus2._run_agent_loop → Terminus2._dump_trajectory": "执行分支追加本轮 Step 后请求落盘，再处理确认退出。",
+      "Terminus2._handle_llm_interaction → Terminus2._query_llm": "取得当前请求的回复，随后读取回复对象的 .content。",
+      "Terminus2._handle_llm_interaction → TerminusJSONPlainParser.parse_response": "parser_name 为 json 时，用选中的 JSON 解析器读取回复正文。",
+      "Terminus2._handle_llm_interaction → TerminusXMLPlainParser.parse_response": "parser_name 为 xml 时，用选中的 XML 解析器读取回复正文。",
+      "TerminusXMLPlainParser.salvage_truncated_response → TerminusXMLPlainParser.parse_response": "找到闭合片段后重新解析，用返回的 error 和 warning 决定是否接纳它。",
+      "Terminus2._execute_commands → TmuxSession.send_keys": "逐条发送 keystrokes，显式传入 block=False 与 min_timeout_sec=duration_sec。",
+      "Terminus2._execute_commands → TmuxSession.get_incremental_output": "整批发完后取屏。某次发送抛 TimeoutError 时也调用它，取得超时反馈所用的终端状态。",
+      "Terminus2._execute_commands → Terminus2._limit_output_length": "正常返回和超时返回都先限制所取得的终端文本。",
+      "TmuxSession.send_keys → TmuxSession._send_non_blocking_keys": "准备后的按键走非阻塞分支时，委托该方法完成发送和最短等待。",
+      "TmuxSession.get_incremental_output → TmuxSession.capture_pane": "先以 capture_entire=True 读取完整缓冲。回退到可见屏幕时，经 _get_visible_screen 再用 capture_entire=False 取屏。",
+      "TmuxSession.get_incremental_output → TmuxSession._find_new_content": "已有上次缓冲时调用文本匹配方法，检查候选增量是否可用。",
+      "Terminus2._check_proactive_summarization → Terminus2._summarize": "剩余上下文低于阈值时请求完整摘要交接。",
+      "Terminus2._query_llm → Terminus2._unwind_messages_to_free_tokens": "启用摘要且模型报告 ContextLengthExceededError 时，先以 4000 token 为目标回退历史。",
+      "Terminus2._query_llm → Terminus2._summarize": "上下文超限且有会话时，在回退后的 Chat 上尝试完整交接。",
+      "Terminus2._query_llm → TmuxSession.capture_pane": "完整摘要未产生恢复提示时，短摘要与最终回退分支读取可见屏幕，至多取尾部 1000 个字符。",
+      "Terminus2._query_llm → TerminusXMLPlainParser.salvage_truncated_response": "输出超限且当前解析器具有该方法时，尝试恢复截断回复中的完整 XML 片段。",
+      "Terminus2._summarize → Terminus2._run_subagent": "在有历史的完整交接中，依次用这一方法发起总结、提问和回答请求。",
+      "Terminus2._summarize → TmuxSession.capture_pane": "构造提问提示时显式读取当前可见屏幕。",
+      "Terminus2._run_subagent → Terminus2._save_subagent_trajectory": "辅助模型调用完成后保存该次步骤，取得返回给摘要流程的引用。",
+      "Terminus2._dump_trajectory → Terminus2._dump_trajectory_with_continuation_index": "将当前摘要次数作为续接序号交给实际写入方法。",
+      "Terminus2._split_trajectory_on_summarization → Terminus2._dump_trajectory_with_continuation_index": "在重建续接段前，用当前摘要次数减一的序号保存旧段。",
+      "TmuxSession.start → TmuxSession.send_keys": "录制开启时通过会话发送启动 asciinema 和清屏按键。",
+      "TmuxSession.stop → TmuxSession.send_keys": "配置了录像时通过会话发送 C-d，随后尝试下载录像。",
+      "TmuxSession.stop → AsciinemaHandler.merge_markers": "存在标记和本地录像路径时构造 handler 并调用合并方法。"
+    },
+    "influences": {
+      "Terminus2.__init__ → Terminus2._run_agent_loop": "如果配置了 max_turns 或兼容的轮次参数，循环只迭代相应轮数，即使最后一轮刚提出完成确认，预算用尽也会结束。",
+      "Terminus2._get_prompt_template_path → Terminus2.run": "parser_name 决定初始化载入的提示模板。run 填入同一任务与终端状态时，模型会看到与所选 JSON 或 XML 解析器相应的按键、等待和完成声明约定。",
+      "Terminus2._build_skills_section → Terminus2.run": "远端 skills_dir 存在有效条目时，返回的名称、描述和路径被追加到首轮任务说明。没有条目时首轮提示不含 available_skills 段。",
+      "TmuxSession.get_incremental_output → Terminus2.run": "构造首轮提示时，会话返回的屏幕或增量文本经长度限制后填入 terminal_state，同时出现在首个 user step。",
+      "Terminus2.run → Terminus2._run_agent_loop": "进入循环时，initial_prompt 携带协议、任务和初始终端状态，作为首轮候选输入。原始 instruction 另行传入，供后续上下文交接使用。",
+      "TmuxSession.is_session_alive → Terminus2._run_agent_loop": "回合开始时 tmux has-session 返回非零，主循环在本轮模型请求前退出。此处的退出原因是终端会话已经消失。",
+      "Terminus2._get_parser → Terminus2._handle_llm_interaction": "初始化选定的解析器决定同一份模型文本按 JSON 结构还是 XML 标签解释，并决定运行时收到哪些命令、完成标志和诊断。",
+      "TerminusJSONPlainParser.parse_response → Terminus2._handle_llm_interaction": "在 JSON 模式下，合法条目产生按键与等待时长。结构检查已通过且完成标志为真时，命令条目解析错误可产生空命令、完成标志和警告，仍会进入完成确认判断。",
+      "TerminusXMLPlainParser.parse_response → Terminus2._handle_llm_interaction": "在 XML 模式下，keystrokes 标签内的原文决定送往终端的字符。解析器返回的完成标志与错误、警告会一起传给主循环。",
+      "Terminus2._query_llm → Terminus2._handle_llm_interaction": "普通请求或上下文恢复请求返回 LLMResponse，后续从 .content 取正文。若 XML 截断恢复成功，当前实现直接返回 str，后续在读取 .content 时会遇到属性错误，尚未派发本轮按键。",
+      "Terminus2._handle_llm_interaction → Terminus2._run_agent_loop": "feedback 含 ERROR: 时，主循环记录原回复和 Previous response had parsing errors: 纠错观察，跳过执行和待确认状态更新。只有警告时仍处理该批命令，普通未完成回合将 Previous response had warnings: 与终端输出一起反馈。",
+      "Terminus2._handle_llm_interaction → Terminus2._execute_commands": "回复通过解析后，主循环转交按原顺序排列的 Command。每条的按键沿用解析值，duration_sec 已取 min(duration, 60)，执行器据此设置最短等待。",
+      "TmuxSession._send_non_blocking_keys → Terminus2._execute_commands": "主循环的命令走非阻塞发送路径。发送耗时少于指定时长时再等待差额，随后可以发送下一条按键或取屏，即使前一条 shell 命令仍在运行。",
+      "TmuxSession.send_keys → Terminus2._execute_commands": "若某次发送抛出 TimeoutError，执行器用 templates/timeout.txt 返回含 The previous command timed out after 的反馈并停止发送本批剩余按键。普通路径的 duration 本身是最短等待时间。",
+      "TmuxSession.capture_pane → TmuxSession.get_incremental_output": "完整缓冲用于两次读取间的文本比较。首次读取或增量不可用时，返回的内容改取当前可见窗格，因此观察能包含的历史范围随分支而变。",
+      "TmuxSession._find_new_content → TmuxSession.get_incremental_output": "已有上一次缓冲且匹配出非空白候选文本时，调用方返回 New Terminal Output:。旧缓冲未匹配或候选只有空白时，调用方回退到 Current Terminal Screen:。",
+      "TmuxSession.get_incremental_output → Terminus2._execute_commands": "整批按键发完或发送抛出 TimeoutError 时，执行器取回一次终端文本。有非空增量时得到新增文本，首次读取或无法取到非空增量时得到当前可见屏幕。这决定了后续裁剪所处理的内容。",
+      "Terminus2._limit_output_length → Terminus2._execute_commands": "批末或超时处理取得的终端文本超过预算时，执行器只取得带省略标记的头尾片段，正常反馈或超时模板接收的都是这份处理结果。",
+      "Terminus2._execute_commands → Terminus2._run_agent_loop": "普通未完成回合用整批返回的 terminal_output 构造 observation，必要时附加解析警告。首次声明完成时，同一批次文本进入确认提示。完成状态由主循环在批次返回后处理。",
+      "Terminus2._limit_output_length → Terminus2._run_agent_loop": "在未完成分支，主循环会再次限制执行器已处理过的 terminal_output。第一次裁剪插入的标记也占字节，第二次仍可能裁剪。观察中 interior bytes omitted 给出生成该标记的那一次省略量。",
+      "Terminus2._get_completion_confirmation_message → Terminus2._run_agent_loop": "首次有效完成声明设置待确认标志，确认提示变成下一轮候选输入。待确认期间再次有效声明完成就返回，有效的未完成回复会清除标志，解析错误回合保留原状态。",
+      "Terminus2._run_agent_loop → Terminus2._query_llm": "后续回合仍在预算内、会话存活且主动摘要没有替换提示时，批次观察、完成确认或解析纠错提示经 _handle_llm_interaction 进入下一次 chat.chat。确认结束的回合不会再发起这次请求。",
+      "Terminus2._check_proactive_summarization → Terminus2._run_agent_loop": "有原任务且启用摘要时，阈值检查返回交接结果会使主循环在本轮请求前替换 prompt。检查返回 None 时继续使用原先的反馈。",
+      "Terminus2._unwind_messages_to_free_tokens → Terminus2._summarize": "在启用摘要的上下文超限恢复路径中，近期消息先被成对移除，完整摘要读取的是剩余历史。主动摘要由剩余 token 阈值触发，走另一条入口。",
+      "TmuxSession.capture_pane → Terminus2._summarize": "完整交接的提问调用从空历史开始，输入中包含任务、已有总结及此刻的可见屏幕。提问方据此生成问题，再由能够读取原有历史的一方回答。",
+      "Terminus2._run_subagent → Terminus2._summarize": "交接的三次辅助调用依次成功时，总结文本进入提问提示，问题进入回答提示，回答文本进入 handoff_prompt。三次子轨迹引用也随结果返回。",
+      "Terminus2._summarize → Terminus2._run_agent_loop": "主动交接成功后，主 Chat 已换成保留首消息、提问提示和问题的历史，主循环将含回答的 handoff_prompt 用作本轮提示，后续按键继续发往原终端。",
+      "Terminus2._summarize → Terminus2._query_llm": "上下文超限恢复时，完整交接成功就用其提示和已替换的 Chat 历史重试。未得到提示时尝试以原任务和屏幕末尾至多 1000 个字符生成短摘要，再失败则用任务和屏幕尾部直接重试。",
+      "TerminusXMLPlainParser.salvage_truncated_response → Terminus2._query_llm": "输出超限且 XML 解析器返回可用片段时，_query_llm 直接返回恢复文本。无法恢复时，它将原提示和截断回复追加到 Chat、重置响应链，再用缩短重发的反馈递归请求。",
+      "_terminal_observation_source_call_id → Terminus2._run_agent_loop": "记录结构化命令调用时，恰有一条已解析命令便把观察关联到 call_{episode}_1，多条命令则只记录一次共享观察，source_call_id 为空。",
+      "Terminus2._execute_commands → Terminus2._dump_trajectory": "批中途返回超时反馈时，主循环把该反馈写进 observation。结构化模式生成 bash_command 时仍遍历整批已解析命令，因此超时之后尚未发送的按键也可能出现在轨迹列表中。",
+      "Terminus2._run_agent_loop → Terminus2._dump_trajectory": "默认模式将 analysis、plan 组成消息，把按键和完成声明分别记作 bash_command、mark_task_complete。raw_content 开启时保留回复正文、使用 observation 并省去这些合成调用。解析错误回合另行追加原回复与纠错观察，随后保存时可见。",
+      "Terminus2._save_subagent_trajectory → Terminus2._run_agent_loop": "完整交接留下子轨迹引用时，主循环写入带 context_management.type=compaction 和引用的 system step。该记录指出本轮使用了上下文交接。",
+      "Terminus2._summarize → Terminus2._split_trajectory_on_summarization": "有待记录的交接提示时，linear_history 开启会使主循环调用切分方法。使用默认的非线性记录方式时，交接提示作为同一段轨迹中的 user step。",
+      "Terminus2._split_trajectory_on_summarization → Terminus2._dump_trajectory_with_continuation_index": "启用线性历史并发生交接时，旧段先保存并带 continued_trajectory_ref，新段使用更新后的 session_id 与重建的步骤，后续写入 trajectory.cont-N.json。",
+      "AsciinemaHandler.merge_markers → TmuxSession.stop": "录制收尾时若本地录像和时间标记都存在，合并结果改变下载到本地的 recording.cast。普通回合的模型输入由终端取屏路径提供。"
+    }
+  }
+}

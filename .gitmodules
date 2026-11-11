@@ -1,0 +1,6 @@
+[submodule "reference/source/agentic-harness-engineering"]
+	path = reference/source/agentic-harness-engineering
+	url = https://github.com/china-qijizhifeng/agentic-harness-engineering.git
+[submodule "reference/source/rrsi"]
+	path = reference/source/rrsi
+	url = https://github.com/google-research/rrsi.git
